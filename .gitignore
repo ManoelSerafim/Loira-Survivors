@@ -1,0 +1,30 @@
+# See http://rogerdudler.github.io/gitignore/ for the full list of templates
+# General
+node_modules/
+dist/
+/*.env*
+
+# Package manager type
+#pnpm-lockfile
+#yarn.lock
+package-lock.json
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Vite / React
+dist/
+*.local
+
+# TypeScript
+*.tsbuildinfo
+*.tsbuildinfo.d
+
+# Vite preview / development
+.history/
