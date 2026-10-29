@@ -417,10 +417,53 @@ export interface OfferCard {
   footer?: string;
 }
 
+export interface RemotePlayerSnapshot {
+  sessionId: string;
+  nickname: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  facing: number;
+  anim: 'idle' | 'walk';
+  hp: number;
+  maxHp: number;
+  status: 'alive' | 'dead' | 'disconnected';
+  characterFrame: number;
+}
+
+export interface MultiplayerConfig {
+  enabled: true;
+  roomCode: string;
+  sessionId: string;
+  nickname: string;
+  hostSessionId: string;
+  isHost: boolean;
+  maxPlayers: number;
+  sendMove: (input: { x: number; y: number; facing: number; anim: 'idle' | 'walk' }) => void;
+  sendEnemyHit: (enemyId: number, damage: number, nonce: string) => void;
+  sendEnemySync: (payload: {
+    enemies: Array<{
+      id: number;
+      defId: string;
+      x: number;
+      y: number;
+      hp: number;
+      maxHp: number;
+      dead: boolean;
+      boss: boolean;
+      elite: boolean;
+      phase2: boolean;
+    }>;
+  }) => void;
+  onPlayerDeath?: () => void;
+}
+
 export interface GameLaunch {
   config: RunConfig;
   save: SaveData;
   seed?: number;
+  multiplayer?: MultiplayerConfig;
   onHud: (snapshot: HudSnapshot) => void;
   onLevelUp: (offers: OfferCard[]) => void;
   onEvent: (event: GameEventDef, detail: string, tone: string) => void;
@@ -430,4 +473,5 @@ export interface GameLaunch {
   onBoss: (boss: { name: string; hp: number; maxHp: number } | null) => void;
   onPaused: (paused: boolean) => void;
   onAchievementsDirty: (snapshot?: RunSnapshot) => void;
+  onRemotePlayers?: (players: RemotePlayerSnapshot[]) => void;
 }

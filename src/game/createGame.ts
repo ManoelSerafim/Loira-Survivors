@@ -4,6 +4,7 @@ import { GameScene } from './GameScene';
 
 export interface GameController {
   readonly scene: GameScene | null;
+  getFps(): number;
   pause(): void;
   resume(): void;
   chooseOffer(index: number): void;
@@ -47,6 +48,9 @@ export function createGame(launch: GameLaunch, parent: HTMLElement): GameControl
   return {
     get scene() {
       return getScene();
+    },
+    getFps() {
+      return game.loop.actualFps;
     },
     pause() {
       getScene()?.pauseRun();

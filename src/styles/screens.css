@@ -287,6 +287,115 @@
   background: rgba(255, 255, 255, 0.026);
 }
 
+/* =========================================================
+   Multiplayer
+   ========================================================= */
+
+.screen-multiplayer .screen-inner {
+  display: grid;
+  gap: 18px;
+}
+
+.mp-setup,
+.mp-lobby {
+  background: linear-gradient(160deg, rgba(11, 31, 52, 0.9), rgba(6, 20, 35, 0.94));
+}
+
+.mp-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.input-stack {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.input-stack input {
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(5, 17, 30, 0.78);
+  color: var(--ink);
+}
+
+.mp-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.mp-status {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.mp-status-offline {
+  color: var(--muted);
+}
+
+.mp-status-connecting {
+  color: var(--aqua);
+}
+
+.mp-status-connected {
+  color: var(--mint);
+}
+
+.mp-status-error {
+  color: var(--danger);
+}
+
+.mp-room-code {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.mp-room-code strong {
+  font-family: var(--font-display);
+  font-size: 22px;
+  letter-spacing: 0.1em;
+}
+
+.mp-player-list {
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.mp-player-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(5, 16, 28, 0.68);
+}
+
+.mp-player-row.is-me {
+  border-color: rgba(107, 224, 255, 0.42);
+}
+
+.mp-player-name {
+  font-weight: 600;
+}
+
+.mp-player-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .stat-tile-icon {
   display: grid;
   place-items: center;

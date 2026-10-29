@@ -2,6 +2,7 @@ import type { AchievementDef, CharacterId, DifficultyId, RegionId, WeaponId } fr
 
 export type ScreenId =
   | 'menu'
+  | 'multiplayer'
   | 'character'
   | 'journey'
   | 'game'
@@ -24,6 +25,7 @@ export interface Selection {
 export type AchievementFilter = 'all' | AchievementDef['category'];
 
 export const SCREEN_BACK: Partial<Record<ScreenId, ScreenId>> = {
+  multiplayer: 'menu',
   character: 'menu',
   journey: 'character',
   shop: 'menu',

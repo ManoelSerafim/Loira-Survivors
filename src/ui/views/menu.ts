@@ -138,6 +138,7 @@ export function renderMenu(save: SaveData, selection: Selection): string {
       </section>
 
       <nav class="menu-nav-grid" aria-label="Menu principal">
+        ${navCard('multiplayer', '🛰️', 'Multiplayer cooperativo', 'Criar sala e jogar com amigos', 'accent-mint')}
         ${navCard('shop', '🛒', 'Loja de upgrades', `${formatNumber(save.permanentCoins)} moedas permanentes`, 'accent-gold')}
         ${navCard('tree', '🌳', 'Árvore de progressão', plural(meta, 'nível permanente', 'níveis permanentes'))}
         ${navCard('achievements', '🏆', 'Conquistas', `${earnedAchievements} de ${ACHIEVEMENTS.length} desbloqueadas`)}

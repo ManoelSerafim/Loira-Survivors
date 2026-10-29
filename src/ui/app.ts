@@ -34,9 +34,13 @@ import { REGIONS } from '../data/regions';
 import { ENDING_MAP } from '../data/endings';
 import { LOIRA_MAP } from '../data/loiras';
 import { ACHIEVEMENT_CATEGORIES } from '../data/achievements';
+import { CHARACTER_FRAME } from '../game/constants';
+import { MultiplayerClient } from '../network/multiplayerClient';
+import type { LobbySnapshot, RemotePlayerNetState } from '../network/types';
 import { GameHud } from './hud';
 import { renderMenu } from './views/menu';
 import { renderCharacterSelect, renderJourney } from './views/setup';
+import { renderMultiplayer } from './views/multiplayer';
 import { renderShop, renderTree } from './views/progression';
 import { renderAchievements } from './views/achievements';
 import { renderStats } from './views/stats';
@@ -57,6 +61,7 @@ interface ToastOptions {
 
 const SCREEN_IDS: ScreenId[] = [
   'menu',
+  'multiplayer',
   'character',
   'journey',
   'game',
@@ -99,6 +104,16 @@ export class App {
   private rerollInFlight = false;
   private runFinalized = true;
   private lastBossName = '';
+  private multiplayer = new MultiplayerClient();
+  private mpStatus: 'offline' | 'connecting' | 'connected' | 'error' = 'offline';
+  private mpStatusMessage = 'Sem conexao ativa.';
+  private mpNickname = '';
+  private mpRoomCodeInput = '';
+  private mpLobby: LobbySnapshot | null = null;
+  private mpSessionId = '';
+  private mpHostSessionId = '';
+  private mpRemotePlayers: RemotePlayerNetState[] = [];
+  private mpActive = false;
   private fpsTimer: number | null = null;
   private persistTimer: number | null = null;
   private toastSequence = 0;
@@ -123,6 +138,8 @@ export class App {
       () => this.persist(),
     );
     this.achievements.setSave(this.save);
+    this.mpNickname = this.defaultNickname();
+    this.bindMultiplayer();
   }
 
   boot(): void {
@@ -279,6 +296,18 @@ export class App {
       case 'start-run':
         this.startRun();
         break;
+      case 'mp-create-room':
+        void this.createMultiplayerRoom();
+        break;
+      case 'mp-join-room':
+        void this.joinMultiplayerRoom();
+        break;
+      case 'mp-leave-room':
+        this.leaveMultiplayerRoom();
+        break;
+      case 'mp-start-run':
+        this.startMultiplayerRun();
+        break;
       case 'buy-meta': {
         const id = actionEl.dataset.id;
         if (!id) break;
@@ -380,6 +409,16 @@ export class App {
   };
 
   private handleSettingInput = (event: Event): void => {
+    const mpInput = event.target as HTMLInputElement | null;
+    if (mpInput?.dataset.mp === 'nickname') {
+      this.mpNickname = mpInput.value.slice(0, 18);
+      return;
+    }
+    if (mpInput?.dataset.mp === 'roomCode') {
+      this.mpRoomCodeInput = mpInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+      mpInput.value = this.mpRoomCodeInput;
+      return;
+    }
     const input = (event.target as HTMLElement | null)?.closest<HTMLInputElement>('input[data-setting]');
     if (!input || input.type !== 'range') return;
     const key = input.dataset.setting;
@@ -444,6 +483,16 @@ export class App {
         return renderCharacterSelect(this.save, this.selection);
       case 'journey':
         return renderJourney(this.save, this.selection);
+      case 'multiplayer':
+        return renderMultiplayer(this.save, this.selection, {
+          nickname: this.mpNickname,
+          roomCodeInput: this.mpRoomCodeInput,
+          status: this.mpStatus,
+          statusMessage: this.mpStatusMessage,
+          lobby: this.mpLobby,
+          mySessionId: this.mpSessionId,
+          hostSessionId: this.mpHostSessionId,
+        });
       case 'shop':
         return renderShop(this.save);
       case 'tree':
@@ -553,6 +602,21 @@ export class App {
           config,
           save: this.save,
           seed: Date.now(),
+          multiplayer: this.mpActive
+            ? {
+                enabled: true,
+                roomCode: this.multiplayer.roomCode,
+                sessionId: this.mpSessionId,
+                nickname: this.mpNickname,
+                hostSessionId: this.mpHostSessionId,
+                isHost: this.multiplayer.isHost,
+                maxPlayers: this.mpLobby?.maxPlayers ?? 4,
+                sendMove: (input) => this.multiplayer.sendMove(input),
+                sendEnemyHit: (enemyId, damage, nonce) => this.multiplayer.sendEnemyHit(enemyId, damage, nonce),
+                sendEnemySync: (payload) => this.multiplayer.sendEnemySync(payload),
+                onPlayerDeath: () => this.multiplayer.sendPlayerDead(),
+              }
+            : undefined,
           onHud: (snapshot) => {
             this.lastHud = snapshot;
             this.hud?.update(snapshot);
@@ -594,6 +658,9 @@ export class App {
           },
           onAchievementsDirty: (snapshot) => {
             this.checkAchievements(snapshot);
+          },
+          onRemotePlayers: () => {
+            // Lobby/scene integration is handled by GameScene internals.
           },
         },
         this.gameContainer,
@@ -642,6 +709,7 @@ export class App {
 
   private finishRun(summary: RunSummary): void {
     if (this.runFinalized) return;
+    if (this.mpActive && this.multiplayer.isHost) this.multiplayer.sendRunEnd(summary.victory);
     this.runFinalized = true;
     this.levelUpOpen = false;
     this.levelOffers = [];
@@ -905,8 +973,7 @@ export class App {
   private startFpsLoop(): void {
     this.stopFpsLoop();
     this.fpsTimer = window.setInterval(() => {
-      const scene = this.controller?.scene;
-      if (scene) this.hud?.setFps(scene.game.loop.actualFps);
+      if (this.controller) this.hud?.setFps(this.controller.getFps());
     }, 500);
   }
 
@@ -938,5 +1005,180 @@ export class App {
   private normalizeTone(tone: string): ToastTone {
     if (tone === 'good' || tone === 'bad' || tone === 'info' || tone === 'gold') return tone;
     return 'info';
+  }
+
+  private defaultNickname(): string {
+    return this.selection.characterId ? this.selection.characterId : 'Viajante';
+  }
+
+  private bindMultiplayer(): void {
+    this.multiplayer.onLobbyUpdate = (snapshot) => {
+      this.mpLobby = snapshot;
+      this.mpHostSessionId = snapshot.hostSessionId;
+      this.mpStatus = 'connected';
+      this.mpStatusMessage = `Sala ${snapshot.roomCode} conectada.`;
+      if (this.screen === 'multiplayer') this.renderSafeToScroll();
+    };
+    this.multiplayer.onRoomStarted = ({ seed }) => {
+      this.mpStatusMessage = 'Partida iniciada pelo anfitriao.';
+      if (!this.controller) {
+        this.startRun({
+          regionId: this.selection.regionId,
+          difficulty: this.selection.difficulty,
+          characterId: this.selection.characterId,
+          loadout: this.save.settings.loadout,
+        });
+      }
+      this.toast(`Partida iniciada (seed ${seed}).`, 'info');
+    };
+    this.multiplayer.onPlayersSnapshot = ({ players }) => {
+      this.mpRemotePlayers = players;
+      const scene = this.controller?.scene;
+      if (!scene) return;
+      scene.syncRemotePlayers(
+        players.map((player) => ({
+          sessionId: player.sessionId,
+          nickname: this.resolvePlayerNickname(player.sessionId, player.nickname),
+          x: player.x,
+          y: player.y,
+          vx: player.vx,
+          vy: player.vy,
+          facing: player.facing,
+          anim: player.anim,
+          hp: player.hp,
+          maxHp: player.maxHp,
+          status: player.status,
+          characterFrame: player.characterFrame,
+        })),
+      );
+    };
+    this.multiplayer.onEnemySnapshot = ({ enemies }) => {
+      const scene = this.controller?.scene;
+      if (!scene) return;
+      scene.syncEnemySnapshot(enemies);
+    };
+    this.multiplayer.onRunEnded = () => {
+      if (this.controller?.scene) {
+        this.toast('Partida encerrada. Voltando ao lobby...', 'info');
+      }
+    };
+    this.multiplayer.onHostChanged = (hostSessionId) => {
+      this.mpHostSessionId = hostSessionId;
+      this.mpStatusMessage = hostSessionId === this.mpSessionId ? 'Voce virou o anfitriao da sala.' : 'Anfitriao atualizado.';
+      if (this.screen === 'multiplayer') this.renderSafeToScroll();
+    };
+    this.multiplayer.onError = (message) => {
+      this.mpStatus = 'error';
+      this.mpStatusMessage = message;
+      this.toast(message, 'bad');
+      if (this.screen === 'multiplayer') this.renderSafeToScroll();
+    };
+    this.multiplayer.onLeave = () => {
+      this.mpActive = false;
+      this.mpStatus = 'offline';
+      this.mpStatusMessage = 'Conexao encerrada.';
+      this.mpLobby = null;
+      this.mpSessionId = '';
+      this.mpHostSessionId = '';
+      if (this.screen === 'multiplayer') this.renderSafeToScroll();
+    };
+  }
+
+  private currentCharacterFrame(): number {
+    return CHARACTER_FRAME[this.selection.characterId] ?? 0;
+  }
+
+  private async createMultiplayerRoom(): Promise<void> {
+    if (this.multiplayer.connected || this.mpStatus === 'connecting') return;
+    const nickname = (this.mpNickname || this.defaultNickname()).trim().slice(0, 18);
+    if (!nickname) {
+      this.toast('Digite um apelido para criar sala.', 'bad');
+      return;
+    }
+    this.mpStatus = 'connecting';
+    this.mpStatusMessage = 'Criando sala...';
+    this.renderSafeToScroll();
+    try {
+      await this.multiplayer.createRoom(nickname, this.currentCharacterFrame());
+      this.mpSessionId = this.multiplayer.sessionId;
+      this.mpHostSessionId = this.multiplayer.hostSessionId;
+      this.mpActive = true;
+      this.mpStatus = 'connected';
+      this.mpStatusMessage = 'Sala criada com sucesso.';
+      this.toast('Sala criada. Compartilhe o codigo com seus amigos.', 'good');
+      this.renderSafeToScroll();
+    } catch (error) {
+      this.mpStatus = 'error';
+      this.mpStatusMessage = error instanceof Error ? error.message : 'Falha ao criar sala.';
+      this.toast(this.mpStatusMessage, 'bad');
+      this.renderSafeToScroll();
+    }
+  }
+
+  private async joinMultiplayerRoom(): Promise<void> {
+    if (this.multiplayer.connected || this.mpStatus === 'connecting') return;
+    const nickname = (this.mpNickname || this.defaultNickname()).trim().slice(0, 18);
+    const roomCode = this.mpRoomCodeInput.trim().toUpperCase();
+    if (!nickname) {
+      this.toast('Digite um apelido para entrar na sala.', 'bad');
+      return;
+    }
+    if (!roomCode) {
+      this.toast('Informe o codigo da sala.', 'bad');
+      return;
+    }
+    this.mpStatus = 'connecting';
+    this.mpStatusMessage = 'Entrando na sala...';
+    this.renderSafeToScroll();
+    try {
+      await this.multiplayer.joinByCode(roomCode, nickname, this.currentCharacterFrame());
+      this.mpSessionId = this.multiplayer.sessionId;
+      this.mpHostSessionId = this.multiplayer.hostSessionId;
+      this.mpActive = true;
+      this.mpStatus = 'connected';
+      this.mpStatusMessage = 'Conectado ao lobby.';
+      this.toast('Entrou na sala com sucesso.', 'good');
+      this.renderSafeToScroll();
+    } catch (error) {
+      this.mpStatus = 'error';
+      this.mpStatusMessage = error instanceof Error ? error.message : 'Falha ao entrar na sala.';
+      this.toast(this.mpStatusMessage, 'bad');
+      this.renderSafeToScroll();
+    }
+  }
+
+  private leaveMultiplayerRoom(): void {
+    this.multiplayer.leave();
+    this.mpActive = false;
+    this.mpStatus = 'offline';
+    this.mpStatusMessage = 'Sem conexao ativa.';
+    this.mpLobby = null;
+    this.mpRemotePlayers = [];
+    this.mpSessionId = '';
+    this.mpHostSessionId = '';
+    this.renderSafeToScroll();
+  }
+
+  private startMultiplayerRun(): void {
+    if (!this.multiplayer.connected || !this.mpLobby) {
+      this.toast('Conecte-se a uma sala primeiro.', 'bad');
+      return;
+    }
+    if (!this.multiplayer.isHost) {
+      this.toast('Somente o anfitriao pode iniciar a partida.', 'bad');
+      return;
+    }
+    this.multiplayer.startRoom({
+      regionId: this.selection.regionId,
+      difficulty: this.selection.difficulty,
+      characterId: this.selection.characterId,
+      loadout: this.save.settings.loadout,
+    });
+  }
+
+  private resolvePlayerNickname(sessionId: string, fallback?: string): string {
+    const fromLobby = this.mpLobby?.players.find((entry) => entry.sessionId === sessionId)?.nickname;
+    if (fromLobby) return fromLobby;
+    return fallback || 'Jogador';
   }
 }

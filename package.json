@@ -6,6 +6,9 @@
   "description": "Loira Survivors: A Jornada até Portugal — um roguelite de sobrevivência pixel art.",
   "scripts": {
     "dev": "vite",
+    "dev:multi": "npm run dev",
+    "dev:server": "npm --prefix backend run dev",
+    "build:server": "npm --prefix backend run build",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
@@ -13,6 +16,7 @@
     "extract": "node scripts/extract-sprites.mjs"
   },
   "dependencies": {
+    "colyseus.js": "^0.16.15",
     "phaser": "^3.90.0"
   },
   "devDependencies": {

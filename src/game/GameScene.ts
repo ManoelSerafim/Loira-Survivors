@@ -5,6 +5,7 @@ import type {
   GameLaunch,
   HudSnapshot,
   OfferCard,
+  RemotePlayerSnapshot,
   RunSummary,
   WeaponId,
 } from '../core/types';
@@ -38,6 +39,28 @@ import { updateBlasts, updateHazards, updatePickups, updateProjectiles } from '.
 import { WeaponSystem } from './weapons';
 
 const LOOT_TEXTURES = ['coin', 'gem', 'heart', 'chest', 'chest_red', 'star', 'key', 'map', 'potion', 'card', 'book', 'crown'];
+
+interface RemotePlayerVisual {
+  snapshot: RemotePlayerSnapshot;
+  targetX: number;
+  targetY: number;
+  sprite: Phaser.GameObjects.Image;
+  shadow: Phaser.GameObjects.Image;
+  label: Phaser.GameObjects.Text;
+}
+
+interface EnemySnapshotEntry {
+  id: number;
+  defId: string;
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  dead: boolean;
+  boss: boolean;
+  elite: boolean;
+  phase2: boolean;
+}
 
 export class GameScene extends Phaser.Scene {
   model!: RunModel;
@@ -97,6 +120,8 @@ export class GameScene extends Phaser.Scene {
   private eventIndex = 0;
   private eventThresholds: number[] = [];
   private lastSfx = new Map<string, number>();
+  private remotePlayers = new Map<string, RemotePlayerVisual>();
+  private enemySyncTimer = 0;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -189,6 +214,9 @@ export class GameScene extends Phaser.Scene {
 
     this.model.tick(dt);
     this.updatePlayer(dt);
+    this.sendMultiplayerInput();
+    this.updateRemotePlayers(dt);
+    this.syncEnemiesMultiplayer(dt);
     this.weapons.update(dt);
     this.updateSpawner(dt);
     this.updateEnemies(dt);
@@ -357,6 +385,163 @@ export class GameScene extends Phaser.Scene {
       .setTint(this.hurtTimer > 0 ? 0xff8080 : 0xffffff);
     this.playerShadow.setPosition(this.player.x, this.player.y + 2).setDepth(3 + this.player.y * 0.0005);
     this.playerGlow.setPosition(this.player.x, this.player.y - 30).setDepth(2);
+  }
+
+  private sendMultiplayerInput(): void {
+    const mp = this.launch.multiplayer;
+    if (!mp?.enabled || !this.running || this.paused || this.ending) return;
+    const input = this.readMoveInput();
+    const magnitude = Math.hypot(input.x, input.y);
+    const x = magnitude > 1 ? input.x / magnitude : input.x;
+    const y = magnitude > 1 ? input.y / magnitude : input.y;
+    const anim: 'idle' | 'walk' = magnitude > 0.04 ? 'walk' : 'idle';
+    mp.sendMove({ x, y, facing: this.facing, anim });
+  }
+
+  public syncRemotePlayers(players: RemotePlayerSnapshot[]): void {
+    const mp = this.launch.multiplayer;
+    if (!mp?.enabled) return;
+    const ownId = mp.sessionId;
+    const activeIds = new Set<string>();
+
+    for (const player of players) {
+      if (player.sessionId === ownId) continue;
+      activeIds.add(player.sessionId);
+      const existing = this.remotePlayers.get(player.sessionId);
+      if (!existing) {
+        const frame = clamp(player.characterFrame, 0, 5);
+        const idleKey = this.textures.exists(`player_idle_${frame}`) ? `player_idle_${frame}` : 'player_idle_0';
+        const walkKey = this.textures.exists(`player_walk_${frame}`) ? `player_walk_${frame}` : idleKey;
+        const shadow = this.add.image(player.x, player.y + 2, 'p_shadow').setScale(0.65).setAlpha(0.3).setDepth(3);
+        const sprite = this.add.image(player.x, player.y, idleKey).setOrigin(0.5, 1).setScale(1.0).setDepth(12);
+        const label = this.add
+          .text(player.x, player.y - 72, player.nickname, {
+            fontFamily: 'Rubik',
+            fontSize: '12px',
+            color: '#dff8ff',
+            stroke: '#07101d',
+            strokeThickness: 3,
+          })
+          .setOrigin(0.5, 1)
+          .setDepth(50);
+        this.remotePlayers.set(player.sessionId, {
+          snapshot: { ...player, anim: player.anim },
+          targetX: player.x,
+          targetY: player.y,
+          sprite,
+          shadow,
+          label,
+        });
+        sprite.setData('idleKey', idleKey);
+        sprite.setData('walkKey', walkKey);
+        continue;
+      }
+      existing.snapshot = player;
+      existing.targetX = player.x;
+      existing.targetY = player.y;
+      existing.label.setText(player.nickname);
+    }
+
+    for (const [sessionId, visual] of this.remotePlayers.entries()) {
+      if (activeIds.has(sessionId)) continue;
+      visual.shadow.destroy();
+      visual.sprite.destroy();
+      visual.label.destroy();
+      this.remotePlayers.delete(sessionId);
+    }
+  }
+
+  public syncEnemySnapshot(entries: EnemySnapshotEntry[]): void {
+    const mp = this.launch.multiplayer;
+    if (!mp?.enabled || mp.isHost) return;
+
+    const byId = new Map<number, EnemyRuntime>();
+    for (const enemy of this.enemies) byId.set(enemy.id, enemy);
+
+    const keep = new Set<number>();
+    for (const entry of entries) {
+      keep.add(entry.id);
+      let enemy = byId.get(entry.id);
+      if (!enemy && !entry.dead) {
+        const def = getEnemy(entry.defId);
+        const scaled = scaleEnemy(def, {
+          elapsed: this.model.elapsed,
+          duration: this.model.duration,
+          difficulty: this.model.config.difficulty,
+          regionId: this.model.region.id,
+          elite: entry.elite,
+        });
+        enemy = this.spawnEnemy(def, scaled, entry.x, entry.y, entry.elite, entry.boss);
+        enemy.id = entry.id;
+      }
+      if (!enemy) continue;
+      enemy.x = entry.x;
+      enemy.y = entry.y;
+      enemy.hp = entry.hp;
+      enemy.maxHp = Math.max(1, entry.maxHp);
+      enemy.phase2 = entry.phase2;
+      if (entry.dead && !enemy.dead) this.killEnemy(enemy);
+    }
+
+    for (const enemy of this.enemies) {
+      if (!keep.has(enemy.id) && !enemy.dead) enemy.dead = true;
+    }
+  }
+
+  private syncEnemiesMultiplayer(dt: number): void {
+    const mp = this.launch.multiplayer;
+    if (!mp?.enabled) return;
+
+    if (!mp.isHost) {
+      for (const enemy of this.enemies) {
+        enemy.vx = 0;
+        enemy.vy = 0;
+      }
+      return;
+    }
+
+    this.enemySyncTimer += dt;
+    if (this.enemySyncTimer < 0.12) return;
+    this.enemySyncTimer = 0;
+
+    mp.sendEnemySync({
+      enemies: this.enemies
+        .filter((enemy) => !enemy.dead)
+        .map((enemy) => ({
+          id: enemy.id,
+          defId: enemy.def.id,
+          x: enemy.x,
+          y: enemy.y,
+          hp: enemy.hp,
+          maxHp: enemy.maxHp,
+          dead: enemy.dead,
+          boss: enemy.boss,
+          elite: enemy.elite,
+          phase2: enemy.phase2,
+        })),
+    });
+  }
+
+  private updateRemotePlayers(dt: number): void {
+    if (!this.remotePlayers.size) return;
+    const follow = Math.min(1, dt * 12);
+    for (const visual of this.remotePlayers.values()) {
+      const snap = visual.snapshot;
+      visual.sprite.x += (visual.targetX - visual.sprite.x) * follow;
+      visual.sprite.y += (visual.targetY - visual.sprite.y) * follow;
+
+      const walkKey = String(visual.sprite.getData('walkKey') ?? 'player_walk_0');
+      const idleKey = String(visual.sprite.getData('idleKey') ?? 'player_idle_0');
+      visual.sprite.setTexture(snap.anim === 'walk' ? walkKey : idleKey);
+      if (Math.abs(snap.vx) > 3) visual.sprite.setFlipX(snap.vx < 0);
+      visual.sprite.setAlpha(snap.status === 'alive' ? 0.9 : 0.45);
+      visual.sprite.setDepth(10 + visual.sprite.y * 0.001);
+
+      visual.shadow.setPosition(visual.sprite.x, visual.sprite.y + 2).setDepth(3 + visual.sprite.y * 0.0005);
+      visual.shadow.setAlpha(snap.status === 'alive' ? 0.3 : 0.15);
+      visual.label.setPosition(visual.sprite.x, visual.sprite.y - 72);
+      visual.label.setAlpha(snap.status === 'alive' ? 1 : 0.6);
+    }
   }
 
   private updateSpawner(dt: number): void {
@@ -1002,6 +1187,7 @@ export class GameScene extends Phaser.Scene {
     this.cameras.main.shake(300, 0.01);
     this.emitHud(true);
     this.launch.onToast('A jornada terminou antes de Portugal. Tente de novo.', 'bad');
+    this.launch.multiplayer?.onPlayerDeath?.();
     this.time.delayedCall(1700, () => this.finish(false));
   }
 
@@ -1450,5 +1636,11 @@ export class GameScene extends Phaser.Scene {
     this.pickups = [];
     this.hazards = [];
     this.blasts = [];
+    for (const remote of this.remotePlayers.values()) {
+      remote.shadow.destroy();
+      remote.sprite.destroy();
+      remote.label.destroy();
+    }
+    this.remotePlayers.clear();
   }
 }
